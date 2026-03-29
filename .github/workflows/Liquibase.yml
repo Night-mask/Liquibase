@@ -1,0 +1,53 @@
+name: Liquibase
+
+on:
+  workflow_run:
+    workflows:
+      - SQL to changelog CONVERTER via python
+    types:
+      - completed
+
+permissions:
+  contents: read       
+  id-token: write
+
+jobs:
+  liquibase:
+    name: Liquibase updation on master xml
+    if: ${{ github.event.workflow_run.conclusion == 'success' }}
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Git checkout
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ github.event.workflow_run.head_repository.full_name }}
+          ref: ${{ github.event.workflow_run.head_sha }}
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Install Liquibase
+        uses: liquibase/setup-liquibase@v2
+        with:
+          version: '5.0.0'
+          edition: 'oss'
+
+
+      - name: Run Liquibase master changelog
+        env:
+          LIQUIBASE_URL: ${{ secrets.DB_URL }}
+          LIQUIBASE_USERNAME: ${{ secrets.DB_USERNAME }}
+          LIQUIBASE_PASSWORD: ${{ secrets.DB_PASSWORD }}
+        run: |
+          liquibase \
+            --changeLogFile=changelog/master.xml \
+            --url="$LIQUIBASE_URL" \
+            --username="$LIQUIBASE_USERNAME" \
+            --password="$LIQUIBASE_PASSWORD" \
+            update

@@ -1,0 +1,101 @@
+name: SQL to changelog CONVERTER via python
+
+# REQUIRED to allow git push
+permissions:
+  contents: write
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+env:
+  WORKING_DIR: .
+
+jobs:
+  sql-to-changelog:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # REQUIRED for git diff
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+
+      - name: Detect SQL files in all commits of this push
+        id: changes
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          echo "Detecting SQL files from all commits in this push..."
+
+          BEFORE_SHA="${{ github.event.before }}"
+          AFTER_SHA="${{ github.sha }}"
+
+          # Handle first push or orphan commit
+          if [ "$BEFORE_SHA" = "0000000000000000000000000000000000000000" ]; then
+            echo "First push detected. Processing all SQL files."
+            CHANGED_SQL="$(git ls-files '*.sql' || true)"
+          else
+            CHANGED_SQL="$(git diff --name-only "$BEFORE_SHA" "$AFTER_SHA" | grep -Ei '\.sql$' || true)"
+          fi
+
+          echo "SQL files to process:"
+          echo "$CHANGED_SQL"
+
+          printf "changed_sql<<EOF\n%s\nEOF\n" "$CHANGED_SQL" >> "$GITHUB_OUTPUT"
+
+
+
+      - name: Generate Liquibase changelog(s)
+        if: steps.changes.outputs.changed_sql != ''
+        working-directory: ${{ env.WORKING_DIR }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          echo "Generating changelogs..."
+
+          while IFS= read -r sql; do
+            [ -z "$sql" ] && continue
+            echo "Processing: $sql"
+            python3 SCRIPT.py "$sql"
+          done <<< "${{ steps.changes.outputs.changed_sql }}"
+
+
+      - name: Commit and push generated changelog
+        if: steps.changes.outputs.changed_sql != ''
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          # Prevent infinite loop
+          LAST_AUTHOR="$(git log -1 --pretty=format:'%an')"
+          if [ "$LAST_AUTHOR" = "github-actions" ]; then
+            echo "Last commit was by github-actions. Skipping auto-commit."
+            exit 0
+          fi
+
+          git config user.name "github-actions"
+          git config user.email "github-actions@github.com"
+
+          git add changelog/child/*.xml
+
+          if git diff --cached --quiet; then
+            echo "No new changelog files to commit"
+          else
+            git commit -m "Auto-generate Liquibase changelog for SQL changes"
+            git push
+          fi
+
+      - name: No SQL changes detected
+        if: steps.changes.outputs.changed_sql == ''
+        run: echo "No SQL changes detected. Skipping changelog generation."
